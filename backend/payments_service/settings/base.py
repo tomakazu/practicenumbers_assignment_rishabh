@@ -40,6 +40,8 @@ INSTALLED_APPS = [
     "django_guid",
     "common",
     "users",
+    "mock_processor",
+    "payments",
 ]
 
 MIDDLEWARE = [
