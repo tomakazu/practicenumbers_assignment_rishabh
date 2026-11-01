@@ -8,6 +8,7 @@ from drf_spectacular.views import (
     SpectacularRedocView,
     SpectacularSwaggerView,
 )
+from payments.views import DemoPageView, ProcessorWebhookView
 from rest_framework.routers import DefaultRouter
 from users.routes import routes as users_routes
 
@@ -21,11 +22,14 @@ urlpatterns = [
     path("", include("common.urls"), name="common"),
     path("admin/", admin.site.urls, name="admin"),
     path("admin/defender/", include("defender.urls")),
+    path("processor/", include("mock_processor.urls")),
+    path("webhooks/processor", ProcessorWebhookView.as_view(), name="processor-webhook"),
+    path("demo", DemoPageView.as_view(), name="payments-demo"),
     path("jsreverse/", django_js_reverse.views.urls_js, name="js_reverse"),
+    path("api/", include("payments.urls")),
     path("api/", include(router.urls), name="api"),
     # drf-spectacular
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
-    path("processor/", include("mock_processor.urls")),
     path(
         "api/schema/swagger-ui/",
         SpectacularSwaggerView.as_view(url_name="schema"),
