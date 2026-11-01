@@ -266,3 +266,21 @@ ADMIN_ENVIRONMENT_COLOR = config("ADMIN_ENVIRONMENT_COLOR", default="#111827")
 ADMIN_ENVIRONMENT_BACKGROUND_COLOR = config(
     "ADMIN_ENVIRONMENT_BACKGROUND_COLOR", default="#f59e0b"
 )
+
+# ---------------------------------------------------------------------------
+# Payment processor settings
+# ---------------------------------------------------------------------------
+import os as _os
+
+try:
+    from decouple import config as _config
+except ImportError:  # fall back to plain environment variables
+    def _config(key, default=""):
+        return _os.environ.get(key, default)
+
+# Shared secret for signing/verifying processor webhooks (set it in backend/.env).
+PROCESSOR_WEBHOOK_SECRET = _config("PROCESSOR_WEBHOOK_SECRET", default="")
+# Where the mock processor sends webhooks (the backend container itself).
+PROCESSOR_WEBHOOK_URL = _config("PROCESSOR_WEBHOOK_URL", default="http://localhost:8000/webhooks/processor")
+# true: results arrive automatically after each charge. false: only via simulate_webhooks.
+PROCESSOR_AUTO_DELIVER_WEBHOOKS = str(_config("PROCESSOR_AUTO_DELIVER_WEBHOOKS", default="true")).lower() == "true"
