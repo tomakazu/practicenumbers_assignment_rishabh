@@ -1,6 +1,10 @@
 import secrets
 
-from .models import PaymentMethodToken
+from django.conf import settings
+from django.db import transaction
+
+from . import webhooks
+from .models import Charge, PaymentMethodToken
 from .validators import (
     TokenizationError,
     detect_brand,
@@ -68,3 +72,52 @@ def _tokenize_bank(data):
 
 def _new_token():
     return f"tok_{secrets.token_hex(12)}"
+
+class ChargeError(Exception):
+    """Raised when the processor cannot accept a charge request."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def decide_outcome(method, last4):
+    """Return (final_status, failure_code, settle_delay_seconds) from the brief's test table."""
+    if last4 == "0002":
+        failure = "card_declined" if method == "card" else "insufficient_funds"
+        return "failed", failure, 0
+    if last4 == "0119":
+        return "failed", "processor_error", 0
+    if last4 == "0341":
+        return "succeeded", None, 15
+    return "succeeded", None, 0
+
+
+def charge(token, amount, currency):
+    try:
+        payment_method = PaymentMethodToken.objects.get(token=token)
+    except PaymentMethodToken.DoesNotExist:
+        raise ChargeError("invalid_token", "Unknown payment token.")
+
+    final_status, failure_code, delay = decide_outcome(payment_method.method, payment_method.last4)
+
+    new_charge = Charge.objects.create(
+        processor_reference=f"pr_{secrets.token_hex(12)}",
+        payment_method=payment_method,
+        amount=amount,
+        currency=currency,
+        final_status=final_status,
+        failure_code=failure_code,
+        settle_delay_seconds=delay,
+        pending_event_id=webhooks.new_event_id(),
+        final_event_id=webhooks.new_event_id(),
+    )
+
+    if getattr(settings, "PROCESSOR_AUTO_DELIVER_WEBHOOKS", True):
+        # Send the result only after the caller's transaction commits, so the
+        # webhook can never arrive before the payment exists.
+        reference = new_charge.processor_reference
+        transaction.on_commit(lambda: webhooks.schedule_automatic_delivery(reference))
+
+    return {"processor_reference": new_charge.processor_reference}
