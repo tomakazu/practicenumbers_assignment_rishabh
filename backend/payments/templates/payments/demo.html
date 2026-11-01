@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Payments demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f6f7f9; color: #1d2330; }
+    header { background: #1d2330; color: #fff; padding: 14px 24px; }
+    header h1 { margin: 0; font-size: 18px; }
+    header p { margin: 4px 0 0; font-size: 13px; color: #b8bfcc; }
+    main { display: grid; grid-template-columns: 380px 1fr; gap: 20px; padding: 20px 24px; }
+    .card { background: #fff; border: 1px solid #e3e6eb; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+    .card h2 { font-size: 15px; margin: 0 0 12px; }
+    label { display: block; font-size: 12px; color: #5b6475; margin: 10px 0 4px; }
+    select, input { width: 100%; padding: 8px; border: 1px solid #cfd4dc; border-radius: 6px; font-size: 14px; }
+    button { padding: 8px 12px; border: 1px solid #cfd4dc; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; margin: 8px 6px 0 0; }
+    button.primary { background: #2f5bea; color: #fff; border-color: #2f5bea; }
+    button:disabled { opacity: .5; cursor: default; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #eef0f3; }
+    th { color: #5b6475; font-weight: 600; }
+    tr.row { cursor: pointer; }
+    tr.row:hover, tr.selected { background: #f1f4ff; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+    .pending { background: #fff4d6; color: #8a6100; }
+    .succeeded { background: #dcf5e5; color: #17663a; }
+    .failed { background: #fde2e2; color: #9b1c1c; }
+    .muted { color: #8a93a3; font-size: 12px; }
+    #log { font-family: ui-monospace, Menlo, monospace; font-size: 12px; max-height: 340px; overflow: auto; background: #10141c; color: #d5dae3; border-radius: 6px; padding: 10px; }
+    #log .entry { border-bottom: 1px solid #262c38; padding: 6px 0; white-space: pre-wrap; word-break: break-all; }
+    #log .ok { color: #7ee2a8; } #log .bad { color: #ff9b9b; }
+    .note { font-size: 12px; color: #5b6475; background: #f6f7f9; padding: 8px; border-radius: 6px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Payments demo</h1>
+  <p>Card and bank details go only to the processor (<code>/processor/tokenize</code>). The payments API only ever receives the token.</p>
+</header>
+<main>
+  <section>
+    <div class="card">
+      <h2>1. Make a payment</h2>
+      <label for="method">Payment method</label>
+      <select id="method"></select>
+      <label for="amount">Amount (USD)</label>
+      <input id="amount" type="number" min="0.01" step="0.01" value="50.00">
+      <button class="primary" id="pay">Pay</button>
+      <div class="note">After paying, try the idempotency buttons. They reuse the last Idempotency-Key.</div>
+      <button id="retry" disabled>Retry same request</button>
+      <button id="conflict" disabled>Same key, different amount</button>
+    </div>
+    <div class="card">
+      <h2>Request log</h2>
+      <div id="log"><div class="muted">Requests will appear here.</div></div>
+    </div>
+  </section>
+  <section>
+    <div class="card">
+      <h2>2. Payments <span class="muted">(refreshes every 2 seconds; click a row)</span></h2>
+      <table>
+        <thead><tr><th>Created</th><th>Amount</th><th>Status</th><th>Processor ref</th></tr></thead>
+        <tbody id="payments"><tr><td colspan="4" class="muted">No payments yet.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="card" id="detail-card" hidden>
+      <h2>3. Payment details <span class="muted" id="detail-id"></span></h2>
+      <div class="muted">Send this payment's webhooks again in a messy way:</div>
+      <button data-mode="normal">normal</button>
+      <button data-mode="duplicate">duplicate</button>
+      <button data-mode="reverse">reverse</button>
+      <button data-mode="concurrent">concurrent</button>
+      <h2 style="margin-top:16px">Ledger <span class="muted">(append-only; the status is the last row)</span></h2>
+      <table>
+        <thead><tr><th>#</th><th>Status</th><th>Failure</th><th>Event</th><th>Recorded</th></tr></thead>
+        <tbody id="ledger"></tbody>
+      </table>
+      <h2 style="margin-top:16px">Webhook events received</h2>
+      <table>
+        <thead><tr><th>Event</th><th>Status</th><th>What we did</th><th>Received</th></tr></thead>
+        <tbody id="events"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+  // Test values from the brief: the last 4 digits decide the outcome.
+  const TEST_METHODS = [
+    { label: "Card 4242 - succeeds", body: { method: "card", number: "4242424242424242" } },
+    { label: "Card 0002 - card_declined", body: { method: "card", number: "4000000000000002" } },
+    { label: "Card 0119 - processor_error", body: { method: "card", number: "4000000000000119" } },
+    { label: "Card 0341 - pending 15 s, then succeeds", body: { method: "card", number: "4000000000000341" } },
+    { label: "Bank 6789 - succeeds", body: { method: "bank", account_number: "000123456789" } },
+    { label: "Bank 0002 - insufficient_funds", body: { method: "bank", account_number: "000123450002" } },
+    { label: "Bank 0119 - processor_error", body: { method: "bank", account_number: "000123450119" } },
+    { label: "Bank 0341 - pending 15 s, then succeeds", body: { method: "bank", account_number: "000123450341" } },
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  let last = null;          // { key, body } of the last payment request
+  let selectedId = null;    // payment shown in the details panel
+  let selectedRef = null;
+
+  TEST_METHODS.forEach((m, i) => $("method").add(new Option(m.label, i)));
+
+  function log(title, status, data) {
+    const box = $("log");
+    if (box.querySelector(".muted")) box.innerHTML = "";
+    const div = document.createElement("div");
+    div.className = "entry";
+    const cls = status >= 200 && status < 300 ? "ok" : "bad";
+    div.innerHTML = `<span class="${cls}">${title} → HTTP ${status}</span>\n`;
+    div.appendChild(document.createTextNode(JSON.stringify(data, null, 2)));
+    box.prepend(div);
+  }
+
+  async function call(method, url, body, headers = {}) {
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json", ...headers },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    return { status: res.status, data, replayed: res.headers.get("Idempotent-Replayed") };
+  }
+
+  async function createPayment(key, body) {
+    const r = await call("POST", "/api/payments", body, { "Idempotency-Key": key });
+    const extra = r.replayed ? " (Idempotent-Replayed: true)" : "";
+    log(`POST /api/payments  key=${key}${extra}`, r.status, r.data);
+    return r;
+  }
+
+  $("pay").onclick = async () => {
+    const choice = TEST_METHODS[$("method").value].body;
+    const details = choice.method === "card"
+      ? { ...choice, exp_month: 12, exp_year: 2030, cvv: "123" }
+      : { ...choice, routing_number: "110000000", account_type: "checking" };
+
+    // Step 1: card/bank details go straight to the processor. We never log them.
+    const t = await call("POST", "/processor/tokenize", details);
+    log("POST /processor/tokenize  (card/bank details sent to the processor only)", t.status, t.data);
+    if (t.status !== 201) return;
+
+    // Step 2: our payments API receives only the token.
+    const cents = Math.round(parseFloat($("amount").value) * 100);
+    const key = crypto.randomUUID();
+    const body = { amount: cents, currency: "USD", payment_token: t.data.token };
+    last = { key, body };
+    const r = await createPayment(key, body);
+    $("retry").disabled = $("conflict").disabled = false;
+    if (r.status === 201) select(r.data.id);
+    refreshList();
+  };
+
+  $("retry").onclick = () => createPayment(last.key, last.body);
+  $("conflict").onclick = () => createPayment(last.key, { ...last.body, amount: last.body.amount + 100 });
+
+  document.querySelectorAll("[data-mode]").forEach((btn) => {
+    btn.onclick = async () => {
+      const r = await call("POST", "/processor/simulate", { reference: selectedRef, mode: btn.dataset.mode });
+      log(`simulate_webhooks --mode ${btn.dataset.mode}`, r.status, r.data);
+    };
+  });
+
+  const badge = (s) => `<span class="badge ${s}">${s}</span>`;
+  const time = (iso) => (iso ? new Date(iso).toLocaleTimeString() : "");
+  const short = (id) => (id ? id.slice(0, 12) + "…" : "-");
+
+  async function refreshList() {
+    const r = await call("GET", "/api/payments");
+    if (r.status !== 200) return;
+    $("payments").innerHTML = r.data.length
+      ? r.data.map((p) => `
+          <tr class="row ${p.id === selectedId ? "selected" : ""}" data-id="${p.id}">
+            <td>${time(p.created_at)}</td>
+            <td>$${(p.amount / 100).toFixed(2)}</td>
+            <td>${badge(p.status)}</td>
+            <td><code>${p.processor_reference_masked || "-"}</code></td>
+          </tr>`).join("")
+      : `<tr><td colspan="4" class="muted">No payments yet.</td></tr>`;
+    document.querySelectorAll("tr.row").forEach((tr) => (tr.onclick = () => select(tr.dataset.id)));
+  }
+
+  async function select(id) {
+    selectedId = id;
+    await refreshDetail();
+    refreshList();
+  }
+
+  async function refreshDetail() {
+    if (!selectedId) return;
+    const r = await call("GET", `/api/payments/${selectedId}`);
+    if (r.status !== 200) return;
+    const p = r.data;
+    selectedRef = p.processor_reference;
+    $("detail-card").hidden = false;
+    $("detail-id").textContent = `${p.id} · ${p.processor_reference_masked}`;
+    $("ledger").innerHTML = p.ledger.map((e, i) => `
+      <tr><td>${i + 1}</td><td>${badge(e.status)}</td><td>${e.failure_code || ""}</td>
+          <td><code>${short(e.event_id)}</code></td><td>${time(e.recorded_at)}</td></tr>`).join("");
+    $("events").innerHTML = p.webhook_events.length
+      ? p.webhook_events.map((e) => `
+          <tr><td><code>${short(e.event_id)}</code></td><td>${badge(e.status)}</td>
+              <td>${e.outcome}</td><td>${time(e.received_at)}</td></tr>`).join("")
+      : `<tr><td colspan="4" class="muted">None yet.</td></tr>`;
+  }
+
+  refreshList();
+  setInterval(() => { refreshList(); refreshDetail(); }, 2000);
+</script>
+</body>
+</html>
